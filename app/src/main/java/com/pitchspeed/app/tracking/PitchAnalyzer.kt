@@ -5,19 +5,11 @@ import android.os.Looper
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import com.pitchspeed.app.data.Sensitivity
-import kotlin.math.abs
 
-private data class Thresholds(
-    val brightMin: Int,
-    val diffMin: Int,
-    val minPixels: Int,
-    val maxPixels: Int
-)
-
-private fun thresholdsFor(sensitivity: Sensitivity): Thresholds = when (sensitivity) {
-    Sensitivity.LOW -> Thresholds(brightMin = 200, diffMin = 45, minPixels = 6, maxPixels = 350)
-    Sensitivity.MEDIUM -> Thresholds(brightMin = 170, diffMin = 30, minPixels = 3, maxPixels = 500)
-    Sensitivity.HIGH -> Thresholds(brightMin = 140, diffMin = 18, minPixels = 2, maxPixels = 700)
+private fun thresholdsFor(sensitivity: Sensitivity): ScanThresholds = when (sensitivity) {
+    Sensitivity.LOW -> ScanThresholds(brightMin = 180, diffMin = 40, minPixels = 6, maxPixels = 350)
+    Sensitivity.MEDIUM -> ScanThresholds(brightMin = 110, diffMin = 24, minPixels = 3, maxPixels = 600)
+    Sensitivity.HIGH -> ScanThresholds(brightMin = 50, diffMin = 12, minPixels = 2, maxPixels = 800)
 }
 
 /**
@@ -25,11 +17,11 @@ private fun thresholdsFor(sensitivity: Sensitivity): Thresholds = when (sensitiv
  * speed estimate.
  *
  * How it works:
- *  1. Every analyzed frame's luma plane is scanned at half resolution. Pixels that are both
- *     bright (a white/light ball) and changed a lot since the previous frame (moving) form a
- *     diff-weighted centroid — the ball's position for that frame, as a 0..1 fraction of the
- *     tracking axis. Frames where far too many pixels move (a person, the thrower's arm) are
- *     rejected by the pixel-count cap so they can't pollute the track.
+ *  1. Every analyzed frame's luma plane is scanned at half resolution by [FrameScanner],
+ *     which finds a compact fast-changing blob — the ball — as a diff-weighted centroid,
+ *     expressed as a 0..1 fraction of the tracking axis. Motion is the primary signal (so
+ *     colored balls and indoor light work); big moving regions like the thrower are skipped
+ *     by clustering rather than blanking the whole frame.
  *  2. Samples accumulate for as long as the ball keeps crossing; the track is only finalized
  *     once no candidate has been seen for [staleSampleGapNs] — i.e. the ball has left the frame —
  *     so the speed fit uses the whole visible flight, not a truncated slice of it.
@@ -53,6 +45,7 @@ class PitchAnalyzer(
     private var prevW = 0
     private var prevH = 0
     private val samples = mutableListOf<TrackSample>()
+    private var prevMovingMask: ByteArray? = null
     private var trackAxisFraction = 1.0
     private var cooldownUntilNs = 0L
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -89,27 +82,12 @@ class PitchAnalyzer(
             val inCooldown = tNs < cooldownUntilNs
 
             if (prev != null && prevW == sw && prevH == sh && !inCooldown) {
-                val t = thresholdsFor(sensitivityProvider())
-                var sumW = 0.0
-                var sumWx = 0.0
-                var sumWy = 0.0
-                var count = 0
-                for (sy in 0 until sh) {
-                    val row = sy * sw
-                    for (sx in 0 until sw) {
-                        val i = row + sx
-                        val luma = cur[i].toInt() and 0xFF
-                        if (luma < t.brightMin) continue
-                        val diff = abs(luma - (prev[i].toInt() and 0xFF))
-                        if (diff >= t.diffMin) {
-                            val w = diff.toDouble()
-                            sumW += w
-                            sumWx += w * sx
-                            sumWy += w * sy
-                            count++
-                        }
-                    }
-                }
+                val curMask = ByteArray(FrameScanner.maskSize(sw, sh))
+                val candidate = FrameScanner.findCandidate(
+                    cur, prev, sw, sh, thresholdsFor(sensitivityProvider()),
+                    suppressMask = prevMovingMask, outMovingMask = curMask
+                )
+                prevMovingMask = curMask
 
                 // If the ball vanished long enough ago, the sweep is over: score it before
                 // touching this frame's candidate (which would belong to a new sweep).
@@ -117,9 +95,9 @@ class PitchAnalyzer(
                     finalizeTrack(tNs)
                 }
 
-                if (count in t.minPixels..t.maxPixels && sumW > 0 && tNs >= cooldownUntilNs) {
+                if (candidate != null && tNs >= cooldownUntilNs) {
                     val useRawHeightAsTrackAxis = rotation == 90 || rotation == 270
-                    val xNorm = if (useRawHeightAsTrackAxis) (sumWy / sumW) / sh else (sumWx / sumW) / sw
+                    val xNorm = if (useRawHeightAsTrackAxis) candidate.cy / sh else candidate.cx / sw
                     trackAxisFraction = if (useRawHeightAsTrackAxis) height.toDouble() / width else 1.0
                     samples.add(TrackSample(xNorm, tNs))
                     while (samples.isNotEmpty() && tNs - samples.first().tNs > maxWindowNs) {
@@ -145,6 +123,7 @@ class PitchAnalyzer(
         )
         samples.clear()
         if (result != null) {
+            prevMovingMask = null // mask will be stale after the cooldown; start fresh
             cooldownUntilNs = nowNs + cooldownNs
             mainHandler.post { onPitchDetected(result) }
         }

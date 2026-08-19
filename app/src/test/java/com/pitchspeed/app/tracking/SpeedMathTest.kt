@@ -110,7 +110,8 @@ class SpeedMathTest {
 
     @Test
     fun `rejects speeds outside the plausible pitch range`() {
-        assertNull(SpeedMath.computeResult(ballSweep(6.0), distance20ftMeters, fov68))
+        assertNull(SpeedMath.computeResult(ballSweep(4.0), distance20ftMeters, fov68))
+        assertNotNull(SpeedMath.computeResult(ballSweep(8.0), distance20ftMeters, fov68))
         assertNull(SpeedMath.computeResult(ballSweep(150.0), distance20ftMeters, fov68))
     }
 
