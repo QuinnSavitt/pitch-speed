@@ -110,7 +110,7 @@ fun HomeScreen(
 
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
-                    Text("Distance to release point", style = MaterialTheme.typography.titleMedium)
+                    Text("Camera distance (side-on)", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(4.dp))
                     Text(
                         "${viewModel.settings.distanceFeet.roundToInt()} ft",

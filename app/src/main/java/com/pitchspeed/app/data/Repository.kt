@@ -17,7 +17,7 @@ class Repository(private val context: Context) {
 
     fun loadSettings(): AppSettings {
         return AppSettings(
-            distanceFeet = prefs.getFloat("distanceFeet", 60.5f).toDouble(),
+            distanceFeet = prefs.getFloat("distanceFeet", 20.0f).toDouble(),
             unit = if (prefs.getString("unit", "MPH") == "KMH") SpeedUnit.KMH else SpeedUnit.MPH,
             sensitivity = when (prefs.getString("sensitivity", "MEDIUM")) {
                 "LOW" -> Sensitivity.LOW

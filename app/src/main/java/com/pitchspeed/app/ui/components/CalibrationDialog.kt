@@ -33,11 +33,11 @@ fun CalibrationDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Distance to pitcher") },
+        title = { Text("Camera distance") },
         text = {
             Column {
                 Text(
-                    "Measure from the camera straight across to where the ball is released (the mound or throwing line). This is what turns pixels into real speed.",
+                    "How far is the camera from the ball's flight path, measured straight across (perpendicular to the throw)? This is NOT the pitcher-to-catcher distance. Pace it off if needed — one big step is about 3 ft. Speed scales directly with this number, so measure it honestly.",
                     style = androidx.compose.material3.MaterialTheme.typography.bodyMedium
                 )
                 Spacer(Modifier.height(12.dp))

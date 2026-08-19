@@ -12,3 +12,9 @@ local.properties
 app/build/
 app/release/
 *.hprof
+
+# Release signing (keep these private, never commit)
+*.jks
+*.keystore
+keystore.properties
+dist/

@@ -11,7 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.HelpOutline
+import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -137,7 +137,7 @@ fun SettingsScreen(
 
             Spacer(Modifier.height(24.dp))
             OutlinedButton(onClick = onHowItWorks, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Filled.HelpOutline, contentDescription = null)
+                Icon(Icons.AutoMirrored.Filled.HelpOutline, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
                 Text("How it works")
             }

@@ -6,42 +6,40 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import com.pitchspeed.app.data.Sensitivity
 import kotlin.math.abs
-import kotlin.math.tan
-
-data class PitchResult(val speedMph: Double, val confidence: Float)
-
-private data class TrackSample(val xNorm: Double, val tNs: Long)
 
 private data class Thresholds(
     val brightMin: Int,
     val diffMin: Int,
-    val minBlobCells: Int,
-    val maxBlobCells: Int
+    val minPixels: Int,
+    val maxPixels: Int
 )
 
 private fun thresholdsFor(sensitivity: Sensitivity): Thresholds = when (sensitivity) {
-    Sensitivity.LOW -> Thresholds(brightMin = 200, diffMin = 45, minBlobCells = 3, maxBlobCells = 160)
-    Sensitivity.MEDIUM -> Thresholds(brightMin = 170, diffMin = 30, minBlobCells = 2, maxBlobCells = 220)
-    Sensitivity.HIGH -> Thresholds(brightMin = 140, diffMin = 18, minBlobCells = 1, maxBlobCells = 260)
+    Sensitivity.LOW -> Thresholds(brightMin = 200, diffMin = 45, minPixels = 6, maxPixels = 350)
+    Sensitivity.MEDIUM -> Thresholds(brightMin = 170, diffMin = 30, minPixels = 3, maxPixels = 500)
+    Sensitivity.HIGH -> Thresholds(brightMin = 140, diffMin = 18, minPixels = 2, maxPixels = 700)
 }
 
 /**
  * Watches the camera feed for a bright object sweeping across the frame and turns that into a
  * speed estimate.
  *
- * How the math works:
- *  1. Every analyzed frame is downsampled to a coarse luma grid. Cells that are both bright
- *     (likely a white/light-colored ball) and changed a lot since the previous frame (likely
- *     moving) are candidates; their diff-weighted centroid is the ball's estimated position for
- *     that frame, expressed as a 0..1 fraction of the tracking axis.
- *  2. [horizontalFovRadians] plus the user-entered distance-to-release-point turns that fraction
- *     into a real angle, and the angle into a real lateral position: realX = distance * tan(angle).
- *  3. Speed = the change in realX over the change in time between the first and last sample of a
- *     detected sweep (an average over the transit, similar to how a Doppler radar's reported
- *     speed is effectively averaged over its detection window).
+ * How it works:
+ *  1. Every analyzed frame's luma plane is scanned at half resolution. Pixels that are both
+ *     bright (a white/light ball) and changed a lot since the previous frame (moving) form a
+ *     diff-weighted centroid — the ball's position for that frame, as a 0..1 fraction of the
+ *     tracking axis. Frames where far too many pixels move (a person, the thrower's arm) are
+ *     rejected by the pixel-count cap so they can't pollute the track.
+ *  2. Samples accumulate for as long as the ball keeps crossing; the track is only finalized
+ *     once no candidate has been seen for [staleSampleGapNs] — i.e. the ball has left the frame —
+ *     so the speed fit uses the whole visible flight, not a truncated slice of it.
+ *  3. [SpeedMath.computeResult] fits a least-squares line to position-vs-time and converts the
+ *     slope to real speed using the camera's field of view and the user-entered perpendicular
+ *     distance to the flight path.
  *
- * This is a fun approximation, not a certified radar: accuracy depends on lighting, frame rate,
- * and the phone being held roughly perpendicular to the pitch with an accurate distance entry.
+ * This is a fun approximation, not a certified radar: accuracy depends on lighting, a steady
+ * phone held side-on to the throw, and an accurate distance entry. The reading is an average
+ * over the visible flight, so it reads a touch under a radar gun's release-point speed.
  */
 class PitchAnalyzer(
     private val distanceMetersProvider: () -> Double,
@@ -50,16 +48,18 @@ class PitchAnalyzer(
     private val onPitchDetected: (PitchResult) -> Unit
 ) : ImageAnalysis.Analyzer {
 
-    private val gridW = 64
-    private val gridH = 36
-    private var prevGrid: FloatArray? = null
+    private val step = 2 // scan every 2nd pixel in both axes: dense enough for a distant ball
+    private var prevLuma: ByteArray? = null
+    private var prevW = 0
+    private var prevH = 0
     private val samples = mutableListOf<TrackSample>()
+    private var trackAxisFraction = 1.0
     private var cooldownUntilNs = 0L
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private val cooldownNs = 1_400_000_000L
     private val staleSampleGapNs = 250_000_000L
-    private val maxWindowNs = 700_000_000L
+    private val maxWindowNs = 900_000_000L
 
     override fun analyze(image: ImageProxy) {
         try {
@@ -72,117 +72,81 @@ class PitchAnalyzer(
             val rotation = image.imageInfo.rotationDegrees
             val tNs = image.imageInfo.timestamp
 
-            val grid = FloatArray(gridW * gridH)
-            for (gy in 0 until gridH) {
-                val py = ((gy + 0.5f) / gridH * height).toInt().coerceIn(0, height - 1)
-                val rowOffset = py * rowStride
-                for (gx in 0 until gridW) {
-                    val px = ((gx + 0.5f) / gridW * width).toInt().coerceIn(0, width - 1)
-                    val idx = rowOffset + px * pixelStride
-                    val luma = if (idx in 0 until buffer.capacity()) (buffer.get(idx).toInt() and 0xFF) else 0
-                    grid[gy * gridW + gx] = luma.toFloat()
+            val sw = width / step
+            val sh = height / step
+            val cur = ByteArray(sw * sh)
+            val capacity = buffer.capacity()
+            for (sy in 0 until sh) {
+                val rowOffset = (sy * step) * rowStride
+                val outRow = sy * sw
+                for (sx in 0 until sw) {
+                    val idx = rowOffset + (sx * step) * pixelStride
+                    cur[outRow + sx] = if (idx < capacity) buffer.get(idx) else 0
                 }
             }
 
-            val prev = prevGrid
+            val prev = prevLuma
             val inCooldown = tNs < cooldownUntilNs
 
-            if (prev != null && !inCooldown) {
+            if (prev != null && prevW == sw && prevH == sh && !inCooldown) {
                 val t = thresholdsFor(sensitivityProvider())
                 var sumW = 0.0
                 var sumWx = 0.0
                 var sumWy = 0.0
                 var count = 0
-                for (gy in 0 until gridH) {
-                    for (gx in 0 until gridW) {
-                        val i = gy * gridW + gx
-                        val cur = grid[i]
-                        val diff = abs(cur - prev[i])
-                        if (cur >= t.brightMin && diff >= t.diffMin) {
-                            sumW += diff
-                            sumWx += diff * gx
-                            sumWy += diff * gy
+                for (sy in 0 until sh) {
+                    val row = sy * sw
+                    for (sx in 0 until sw) {
+                        val i = row + sx
+                        val luma = cur[i].toInt() and 0xFF
+                        if (luma < t.brightMin) continue
+                        val diff = abs(luma - (prev[i].toInt() and 0xFF))
+                        if (diff >= t.diffMin) {
+                            val w = diff.toDouble()
+                            sumW += w
+                            sumWx += w * sx
+                            sumWy += w * sy
                             count++
                         }
                     }
                 }
 
-                val useRawHeightAsTrackAxis = rotation == 90 || rotation == 270
-                if (count in t.minBlobCells..t.maxBlobCells && sumW > 0) {
-                    val gxCentroid = sumWx / sumW
-                    val gyCentroid = sumWy / sumW
-                    val xNorm = if (useRawHeightAsTrackAxis) gyCentroid / gridH else gxCentroid / gridW
-                    samples.add(TrackSample(xNorm, tNs))
-                    while (samples.isNotEmpty() && tNs - samples.first().tNs > maxWindowNs) samples.removeAt(0)
+                // If the ball vanished long enough ago, the sweep is over: score it before
+                // touching this frame's candidate (which would belong to a new sweep).
+                if (samples.isNotEmpty() && tNs - samples.last().tNs > staleSampleGapNs) {
+                    finalizeTrack(tNs)
+                }
 
-                    if (samples.size >= 4) {
-                        tryFinalize(tNs)
+                if (count in t.minPixels..t.maxPixels && sumW > 0 && tNs >= cooldownUntilNs) {
+                    val useRawHeightAsTrackAxis = rotation == 90 || rotation == 270
+                    val xNorm = if (useRawHeightAsTrackAxis) (sumWy / sumW) / sh else (sumWx / sumW) / sw
+                    trackAxisFraction = if (useRawHeightAsTrackAxis) height.toDouble() / width else 1.0
+                    samples.add(TrackSample(xNorm, tNs))
+                    while (samples.isNotEmpty() && tNs - samples.first().tNs > maxWindowNs) {
+                        samples.removeAt(0)
                     }
-                } else if (samples.isNotEmpty() && tNs - samples.last().tNs > staleSampleGapNs) {
-                    tryFinalize(tNs)
                 }
             }
 
-            prevGrid = grid
+            prevLuma = cur
+            prevW = sw
+            prevH = sh
         } finally {
             image.close()
         }
     }
 
-    private fun tryFinalize(nowNs: Long) {
-        val result = computeResult(samples.toList())
+    private fun finalizeTrack(nowNs: Long) {
+        val result = SpeedMath.computeResult(
+            samples = samples.toList(),
+            distanceMeters = distanceMetersProvider(),
+            fovRadians = fovRadiansProvider(),
+            trackAxisFraction = trackAxisFraction
+        )
         samples.clear()
         if (result != null) {
             cooldownUntilNs = nowNs + cooldownNs
             mainHandler.post { onPitchDetected(result) }
         }
-    }
-
-    private fun computeResult(pts: List<TrackSample>): PitchResult? {
-        if (pts.size < 2) return null
-        val distanceMeters = distanceMetersProvider()
-        val fov = fovRadiansProvider()
-
-        fun realX(xNorm: Double): Double {
-            val angle = (xNorm - 0.5) * fov
-            return distanceMeters * tan(angle)
-        }
-
-        val first = pts.first()
-        val last = pts.last()
-        val dtEndpoint = (last.tNs - first.tNs) / 1_000_000_000.0
-        if (dtEndpoint < 0.01) return null
-
-        val xDisplacementNorm = abs(last.xNorm - first.xNorm)
-        if (xDisplacementNorm < 0.12) return null // didn't sweep enough of the frame to trust
-
-        val speedEndpointMps = abs(realX(last.xNorm) - realX(first.xNorm)) / dtEndpoint
-
-        val pairSpeeds = mutableListOf<Double>()
-        for (i in 0 until pts.size - 1) {
-            val dt = (pts[i + 1].tNs - pts[i].tNs) / 1_000_000_000.0
-            if (dt > 0.001) {
-                pairSpeeds.add(abs(realX(pts[i + 1].xNorm) - realX(pts[i].xNorm)) / dt)
-            }
-        }
-        val medianPairMps = median(pairSpeeds)
-
-        val speedMph = speedEndpointMps * 2.23694
-        if (speedMph !in 12.0..110.0) return null
-
-        val consistency = if (medianPairMps > 0.0) {
-            1.0 - (abs(medianPairMps - speedEndpointMps) / medianPairMps).coerceIn(0.0, 1.0)
-        } else 0.5
-        val sampleScore = (pts.size / 8.0).coerceIn(0.0, 1.0)
-        val confidence = ((consistency * 0.6) + (sampleScore * 0.4)).coerceIn(0.05, 1.0).toFloat()
-
-        return PitchResult(speedMph, confidence)
-    }
-
-    private fun median(values: List<Double>): Double {
-        if (values.isEmpty()) return 0.0
-        val sorted = values.sorted()
-        val mid = sorted.size / 2
-        return if (sorted.size % 2 == 0) (sorted[mid - 1] + sorted[mid]) / 2.0 else sorted[mid]
     }
 }

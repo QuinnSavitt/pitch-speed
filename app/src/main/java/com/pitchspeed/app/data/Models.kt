@@ -28,21 +28,26 @@ data class PitchSession(
 }
 
 data class AppSettings(
-    val distanceFeet: Double = 60.5,
+    val distanceFeet: Double = 20.0,
     val unit: SpeedUnit = SpeedUnit.MPH,
     val sensitivity: Sensitivity = Sensitivity.MEDIUM,
     val onboardingComplete: Boolean = false,
     val lastPitcherName: String = ""
 )
 
-/** Common mound / throwing-line distances, in feet, for the quick-pick calibration UI. */
+/**
+ * Quick-pick distances for the calibration UI. These are how far the CAMERA sits from the
+ * ball's flight path (measured straight across, perpendicular to the throw) — NOT the
+ * pitcher-to-catcher distance. The speed math scales linearly with this number, so getting
+ * it right matters more than anything else.
+ */
 object DistancePresets {
     val presets = listOf(
-        "Little League (46 ft)" to 46.0,
-        "Youth / 50 ft" to 50.0,
-        "Middle School (54 ft)" to 54.0,
-        "High School / College / MLB (60.5 ft)" to 60.5,
-        "Flat-ground catch (30 ft)" to 30.0
+        "Up close — 10 ft" to 10.0,
+        "Backyard — 15 ft" to 15.0,
+        "Recommended — 20 ft" to 20.0,
+        "Wide view — 30 ft" to 30.0,
+        "Far back — 40 ft" to 40.0
     )
 }
 

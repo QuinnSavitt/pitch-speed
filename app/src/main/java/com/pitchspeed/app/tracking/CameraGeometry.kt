@@ -14,7 +14,7 @@ import kotlin.math.max
  * distance to the throwing line — into a real-world position. Falls back to a sane phone-camera
  * default (68 degrees) if the device doesn't expose the characteristics.
  */
-@OptIn(ExperimentalCamera2Interop::class)
+@androidx.annotation.OptIn(ExperimentalCamera2Interop::class)
 fun horizontalFovRadians(cameraInfo: CameraInfo): Double {
     return try {
         val characteristics = Camera2CameraInfo.from(cameraInfo)

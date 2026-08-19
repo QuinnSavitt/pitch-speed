@@ -38,12 +38,12 @@ private val pages = listOf(
     OnboardPage(
         Icons.Filled.CameraAlt,
         "Set up the camera",
-        "Prop your phone up sideways (landscape) off to the side, level with the pitch, so the ball flies across the frame in front of the camera — not toward it."
+        "Stand off to the SIDE of the throw, phone sideways (landscape) and held steady, so the ball flies straight across the frame — not toward the camera. Keep the thrower just outside the frame, and avoid open sky behind the ball."
     ),
     OnboardPage(
         Icons.Filled.Straighten,
         "Tell us the distance",
-        "Enter how far the camera is from the release point (the mound or throwing line). Pick a preset or enter a custom distance — this is what makes the math accurate."
+        "Enter how far the camera sits from the ball's flight path — measured straight across, perpendicular to the throw. It is NOT the pitcher-to-catcher distance. 15–25 ft works great; pace it off (one big step ≈ 3 ft)."
     ),
     OnboardPage(
         Icons.Filled.Bolt,
