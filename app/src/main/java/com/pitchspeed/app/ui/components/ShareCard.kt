@@ -92,3 +92,17 @@ fun shareSessionCard(context: Context, session: PitchSession, unit: SpeedUnit) {
     }
     context.startActivity(Intent.createChooser(intent, "Share pitch speed"))
 }
+
+/**
+ * Hands the rendered detection log to any app that takes plain text — mail, messages, a notes
+ * app, the clipboard. Deliberately text and not a file attachment: the point is that a tester can
+ * paste it straight into a reply without hunting for a download.
+ */
+fun shareDiagnosticsText(context: Context, text: String) {
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_SUBJECT, "Pitch Speed diagnostics")
+        putExtra(Intent.EXTRA_TEXT, text)
+    }
+    context.startActivity(Intent.createChooser(intent, "Export diagnostics"))
+}

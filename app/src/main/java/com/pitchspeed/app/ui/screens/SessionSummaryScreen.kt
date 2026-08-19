@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Button
@@ -22,6 +23,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,7 +45,9 @@ fun SessionSummaryScreen(
     unit: SpeedUnit,
     onShare: () -> Unit,
     onDone: () -> Unit,
-    doneLabel: String = "Done"
+    doneLabel: String = "Done",
+    /** Null when no detection log was recorded for this session, which hides the action. */
+    onExportDiagnostics: (() -> Unit)? = null
 ) {
     Scaffold { padding ->
         Column(
@@ -125,6 +129,16 @@ fun SessionSummaryScreen(
                 Icon(Icons.Filled.Share, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
                 Text("Share result card")
+            }
+            if (onExportDiagnostics != null) {
+                TextButton(
+                    onClick = onExportDiagnostics,
+                    modifier = Modifier.fillMaxWidth().height(44.dp)
+                ) {
+                    Icon(Icons.Filled.BugReport, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Export diagnostics")
+                }
             }
             Spacer(Modifier.height(10.dp))
             Button(onClick = onDone, modifier = Modifier.fillMaxWidth().height(52.dp)) {

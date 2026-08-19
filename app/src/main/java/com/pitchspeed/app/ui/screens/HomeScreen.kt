@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
@@ -45,7 +46,13 @@ fun HomeScreen(
     viewModel: AppViewModel,
     onStartSession: (String) -> Unit,
     onHistory: () -> Unit,
-    onSettings: () -> Unit
+    onSettings: () -> Unit,
+    /**
+     * Offered only when the last session ended without detecting a single pitch. That session has
+     * no summary screen of its own, and its log is the most useful one a tester can send back, so
+     * this is the one place it can be exported from.
+     */
+    onExportLastDiagnostics: (() -> Unit)? = null
 ) {
     var showCalibration by remember { mutableStateOf(false) }
     var name by remember { mutableStateOf(viewModel.settings.lastPitcherName) }
@@ -151,6 +158,18 @@ fun HomeScreen(
                 Icon(Icons.Filled.History, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
                 Text("Session History")
+            }
+
+            if (onExportLastDiagnostics != null) {
+                Spacer(Modifier.height(4.dp))
+                TextButton(
+                    onClick = onExportLastDiagnostics,
+                    modifier = Modifier.fillMaxWidth().height(44.dp)
+                ) {
+                    Icon(Icons.Filled.BugReport, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Export last session diagnostics")
+                }
             }
         }
     }

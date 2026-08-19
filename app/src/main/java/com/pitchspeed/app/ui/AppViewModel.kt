@@ -30,6 +30,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     var activePitches by mutableStateOf(listOf<Pitch>())
         private set
 
+    /**
+     * Rendered detection log for the session that just ended. Sessions reopened from history
+     * predate this run and carry none, so the export affordances stay hidden for them.
+     */
+    var lastDiagnostics by mutableStateOf<SessionDiagnostics?>(null)
+        private set
+
+    /**
+     * Set by the Capture screen for the life of a session; [finishSession] snapshots it. Kept as
+     * a plain provider rather than a shared object so the diagnostics recorder never outlives the
+     * camera that fills it.
+     */
+    var diagnosticsProvider: (() -> String)? = null
+
     fun updateSettings(update: (AppSettings) -> AppSettings) {
         settings = update(settings)
         repository.saveSettings(settings)
@@ -50,8 +64,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (activePitches.isNotEmpty()) activePitches = activePitches.dropLast(1)
     }
 
+    /**
+     * Ends the session, saving it if it caught anything.
+     *
+     * The diagnostics snapshot is taken FIRST, before the empty-session early return, because a
+     * session that detected no pitches is the one whose log we most want back from a tester. It
+     * is tagged as having no summary so the UI knows to offer it somewhere other than the summary
+     * screen it will never reach.
+     */
     fun finishSession(): PitchSession? {
-        if (activePitches.isEmpty()) return null
+        val log = diagnosticsProvider?.invoke()
+        if (activePitches.isEmpty()) {
+            lastDiagnostics = log?.let {
+                SessionDiagnostics(activeSessionId, it, producedSummary = false)
+            }
+            return null
+        }
         val session = PitchSession(
             id = activeSessionId,
             pitcherName = activePitcherName,
@@ -61,10 +89,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         )
         repository.saveSession(session)
         sessions = repository.loadSessions()
+        lastDiagnostics = log?.let { SessionDiagnostics(session.id, it, producedSummary = true) }
         return session
     }
 
     fun sessionById(id: String): PitchSession? = sessions.find { it.id == id }
+
+    /** The detection log for [sessionId], or null when none was recorded for it. */
+    fun diagnosticsFor(sessionId: String): String? = lastDiagnostics?.textForSummary(sessionId)
+
+    /**
+     * The detection log of a session that ended without a single pitch, which therefore has no
+     * summary screen to export from. Null whenever the last session did produce one.
+     */
+    val diagnosticsWithoutSummary: String? get() = lastDiagnostics?.textWithoutSummary
 
     fun clearAllData() {
         repository.deleteAllData()

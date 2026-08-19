@@ -13,6 +13,30 @@ data class ScanThresholds(
     val maxPixels: Int
 )
 
+/** Why a lump of motion was not reported as a ball candidate. */
+enum class VetoReason {
+    /** Fewer moving pixels than [ScanThresholds.minPixels] — sensor noise, not an object. */
+    TOO_SMALL,
+
+    /** More moving pixels than [ScanThresholds.maxPixels] — a body, a swing, camera shake. */
+    TOO_BIG,
+
+    /** A tall thin ribbon of motion: a person's or post's edge, never a ball. */
+    VERTICAL,
+
+    /** Motion recurring in blocks that already moved last frame — stationary flicker. */
+    SUPPRESSED
+}
+
+/**
+ * Optional cheap hook for the diagnostics log: told about the motion the scanner looked at and
+ * threw away. Called on the camera thread, at most [FrameScanner.MAX_VETO_REPORTS] times per
+ * frame plus one suppression summary, so implementations must be allocation-light.
+ */
+fun interface ScanStatsSink {
+    fun onVeto(reason: VetoReason, cx: Double, cy: Double, pixelCount: Int)
+}
+
 /**
  * Finds ball-sized moving blobs in a downsampled luma frame. Pure array math with no Android
  * dependencies so the whole detection path can be unit-tested on the JVM.
@@ -57,6 +81,13 @@ object FrameScanner {
     /** Below this many moving pixels a blob is too small for its spread to mean anything. */
     private const val ASPECT_MIN_PIXELS = 4
 
+    /**
+     * Most frames have dozens of active cells and reporting every rejection would bury the log
+     * and cost more than the scan. Only the loudest few rejections per frame are reported — those
+     * are the ones that were competing with the ball.
+     */
+    const val MAX_VETO_REPORTS = 3
+
     fun maskSize(w: Int, h: Int): Int = ((w + BLOCK - 1) / BLOCK) * ((h + BLOCK - 1) / BLOCK)
 
     /**
@@ -93,6 +124,7 @@ object FrameScanner {
      * @param outMovingMask filled with this frame pair's moving blocks; pass it back as
      *        [suppressMask] on the next call.
      * @param maxCandidates how many spatially distinct blobs to report, strongest first.
+     * @param stats optional diagnostics hook told about the motion that was rejected and why.
      * @return up to [maxCandidates] blobs ordered by motion energy, descending.
      */
     fun findCandidates(
@@ -107,7 +139,8 @@ object FrameScanner {
         prevU: ByteArray? = null,
         curV: ByteArray? = null,
         prevV: ByteArray? = null,
-        maxCandidates: Int = DEFAULT_MAX_CANDIDATES
+        maxCandidates: Int = DEFAULT_MAX_CANDIDATES,
+        stats: ScanStatsSink? = null
     ): List<BlobCandidate> {
         if (cur.size < w * h || prev.size < w * h) return emptyList()
         if (maxCandidates < 1) return emptyList()
@@ -143,6 +176,7 @@ object FrameScanner {
         val sumWx2 = DoubleArray(nCells)
         val sumWy2 = DoubleArray(nCells)
         val count = IntArray(nCells)
+        var suppressedPixels = 0
 
         for (y in 0 until h) {
             val row = y * w
@@ -161,7 +195,10 @@ object FrameScanner {
                 if (diff < t.diffMin) continue
                 val b = (y / BLOCK) * bw + x / BLOCK
                 outMask?.set(b, 1)
-                if (suppress != null && suppress[b].toInt() != 0) continue
+                if (suppress != null && suppress[b].toInt() != 0) {
+                    suppressedPixels++
+                    continue
+                }
                 val c = cellRow + x / cellW
                 val wgt = diff.toDouble()
                 sumW[c] += wgt
@@ -180,6 +217,10 @@ object FrameScanner {
         val out = ArrayList<BlobCandidate>(maxCandidates)
         val takenX = IntArray(maxCandidates)
         val takenY = IntArray(maxCandidates)
+        var vetoReports = 0
+        if (stats != null && suppressedPixels > 0) {
+            stats.onVeto(VetoReason.SUPPRESSED, -1.0, -1.0, suppressedPixels)
+        }
         for (c in order) {
             if (sumW[c] <= 0.0) break
             val cellX = c % CELLS_X
@@ -215,7 +256,15 @@ object FrameScanner {
                     nCount += count[n]
                 }
             }
-            if (nCount !in t.minPixels..t.maxPixels || nW <= 0) continue
+            if (nW <= 0) continue
+            if (nCount !in t.minPixels..t.maxPixels) {
+                if (stats != null && vetoReports < MAX_VETO_REPORTS) {
+                    vetoReports++
+                    val reason = if (nCount < t.minPixels) VetoReason.TOO_SMALL else VetoReason.TOO_BIG
+                    stats.onVeto(reason, nWx / nW, nWy / nW, nCount)
+                }
+                continue
+            }
             val mx = nWx / nW
             val my = nWy / nW
             if (nCount >= ASPECT_MIN_PIXELS) {
@@ -223,7 +272,13 @@ object FrameScanner {
                 val sdY = sqrt((nWy2 / nW - my * my).coerceAtLeast(0.0))
                 // Tall and thin: a person's or post's edge sweeping sideways. A ball is round,
                 // or smeared horizontally along the track axis - never a vertical ribbon.
-                if (sdY > VERTICAL_ASPECT_VETO * maxOf(sdX, 1.0)) continue
+                if (sdY > VERTICAL_ASPECT_VETO * maxOf(sdX, 1.0)) {
+                    if (stats != null && vetoReports < MAX_VETO_REPORTS) {
+                        vetoReports++
+                        stats.onVeto(VetoReason.VERTICAL, mx, my, nCount)
+                    }
+                    continue
+                }
             }
             takenX[out.size] = cellX
             takenY[out.size] = cellY

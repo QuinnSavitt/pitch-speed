@@ -68,6 +68,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.pitchspeed.app.data.mphToDisplay
 import com.pitchspeed.app.data.unitLabel
+import com.pitchspeed.app.BuildConfig
+import com.pitchspeed.app.tracking.DiagnosticsLog
 import com.pitchspeed.app.tracking.PitchAnalyzer
 import com.pitchspeed.app.tracking.PitchResult
 import com.pitchspeed.app.tracking.horizontalFovRadians
@@ -103,6 +105,21 @@ fun CaptureScreen(viewModel: AppViewModel, onEndSession: () -> Unit) {
 
     var lastResult by remember { mutableStateOf<PitchResult?>(null) }
     val settingsState = rememberUpdatedState(viewModel.settings)
+
+    // One recorder per session. It is registered with the view model for the life of this screen
+    // and snapshotted when the session is saved, so ending the session captures the log without
+    // the recorder itself outliving the camera.
+    val diagnostics = remember { DiagnosticsLog() }
+    diagnostics.setSession(
+        versionName = BuildConfig.VERSION_NAME,
+        distanceFeet = settingsState.value.distanceFeet,
+        sensitivity = settingsState.value.sensitivity.name,
+        unit = unitLabel(settingsState.value.unit)
+    )
+    DisposableEffect(diagnostics) {
+        viewModel.diagnosticsProvider = { diagnostics.render() }
+        onDispose { viewModel.diagnosticsProvider = null }
+    }
     val onPitch: (PitchResult) -> Unit = remember {
         { result ->
             viewModel.recordPitch(result.speedMph, result.confidence)
@@ -123,7 +140,8 @@ fun CaptureScreen(viewModel: AppViewModel, onEndSession: () -> Unit) {
             CameraPreview(
                 onPitchDetected = onPitch,
                 distanceFeetProvider = { settingsState.value.distanceFeet },
-                sensitivityProvider = { settingsState.value.sensitivity }
+                sensitivityProvider = { settingsState.value.sensitivity },
+                diagnostics = diagnostics
             )
         } else {
             Column(
@@ -245,7 +263,8 @@ private fun PulsingDot() {
 private fun CameraPreview(
     onPitchDetected: (PitchResult) -> Unit,
     distanceFeetProvider: () -> Double,
-    sensitivityProvider: () -> com.pitchspeed.app.data.Sensitivity
+    sensitivityProvider: () -> com.pitchspeed.app.data.Sensitivity,
+    diagnostics: DiagnosticsLog
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -281,7 +300,8 @@ private fun CameraPreview(
                 distanceMetersProvider = { distanceFeetProvider() * 0.3048 },
                 fovRadiansProvider = { fovRadians },
                 sensitivityProvider = sensitivityProvider,
-                onPitchDetected = onPitchDetected
+                onPitchDetected = onPitchDetected,
+                diagnostics = diagnostics
             )
             analysis.setAnalyzer(cameraExecutor, analyzer)
 

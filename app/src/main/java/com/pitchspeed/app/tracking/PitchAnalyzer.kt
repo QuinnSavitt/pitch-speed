@@ -39,7 +39,8 @@ class PitchAnalyzer(
     private val distanceMetersProvider: () -> Double,
     private val fovRadiansProvider: () -> Double,
     private val sensitivityProvider: () -> Sensitivity,
-    private val onPitchDetected: (PitchResult) -> Unit
+    private val onPitchDetected: (PitchResult) -> Unit,
+    private val diagnostics: DiagnosticsLog? = null
 ) : ImageAnalysis.Analyzer {
 
     private val step = 2 // scan every 2nd pixel in both axes: dense enough for a distant ball
@@ -57,11 +58,37 @@ class PitchAnalyzer(
     private val staleSampleGapNs = 250_000_000L
     private val maxWindowNs = 900_000_000L
 
+    /**
+     * Three slots, not two. With two, a pair of specks of junk motion could hold both for the
+     * whole session and the ball never got one; [TrackSet] also now evicts a barely-started slot
+     * rather than turning a fresh candidate away.
+     */
     private val tracks = TrackSet(
         staleGapNs = staleSampleGapNs,
         maxWindowNs = maxWindowNs,
-        maxTracks = 2
+        maxTracks = 3
     )
+
+    /** Timestamp of the frame being scanned, so scanner vetoes can be logged against it. */
+    private var currentFrameNs = 0L
+
+    private val statsSink: ScanStatsSink? = diagnostics?.let { log ->
+        ScanStatsSink { reason, cx, cy, pixelCount ->
+            // Scanner reports scan-grid pixels; the log speaks in 0..1 frame fractions like
+            // every other position, and a negative marker (whole-frame events) passes through.
+            val nx = if (cx < 0.0 || prevW <= 0) cx else cx / prevW
+            val ny = if (cy < 0.0 || prevH <= 0) cy else cy / prevH
+            log.candidateVetoed(currentFrameNs, reason, nx, ny, pixelCount)
+        }
+    }
+
+    init {
+        diagnostics?.let { log ->
+            tracks.onTrackEvent = { event, samples, xNorm ->
+                log.trackEvent(currentFrameNs, event, samples, xNorm)
+            }
+        }
+    }
 
     override fun analyze(image: ImageProxy) {
         try {
@@ -73,9 +100,19 @@ class PitchAnalyzer(
             val height = image.height
             val rotation = image.imageInfo.rotationDegrees
             val tNs = image.imageInfo.timestamp
+            currentFrameNs = tNs
 
             val sw = width / step
             val sh = height / step
+            diagnostics?.noteFrame(tNs)
+            diagnostics?.setCamera(
+                fovDegrees = Math.toDegrees(fovRadiansProvider()),
+                analysisWidth = width,
+                analysisHeight = height,
+                scanWidth = sw,
+                scanHeight = sh,
+                rotationDegrees = rotation
+            )
             val cur = ByteArray(sw * sh)
             val capacity = buffer.capacity()
             for (sy in 0 until sh) {
@@ -121,9 +158,15 @@ class PitchAnalyzer(
                 val candidates = FrameScanner.findCandidates(
                     cur, prev, sw, sh, thresholdsFor(sensitivityProvider()),
                     suppressMask = prevMovingMask, outMovingMask = curMask,
-                    curU = curU, prevU = prevChromaU, curV = curV, prevV = prevChromaV
+                    curU = curU, prevU = prevChromaU, curV = curV, prevV = prevChromaV,
+                    stats = statsSink
                 )
                 prevMovingMask = curMask
+                diagnostics?.let { log ->
+                    for (c in candidates) {
+                        log.candidateAccepted(tNs, c.cx / sw, c.cy / sh, c.pixelCount)
+                    }
+                }
 
                 val useRawHeightAsTrackAxis = rotation == 90 || rotation == 270
                 trackAxisFraction = if (useRawHeightAsTrackAxis) height.toDouble() / width else 1.0
@@ -142,7 +185,8 @@ class PitchAnalyzer(
                 if (!fired && tNs >= cooldownUntilNs && candidates.isNotEmpty()) {
                     tracks.addFrame(
                         candidates.map { if (useRawHeightAsTrackAxis) it.cy / sh else it.cx / sw },
-                        tNs
+                        tNs,
+                        candidates.map { it.pixelCount }
                     )
                 }
             }
@@ -159,12 +203,15 @@ class PitchAnalyzer(
 
     /** Scores one finished track; reports it and starts the cooldown if it flew like a ball. */
     private fun finalizeTrack(track: List<TrackSample>, nowNs: Long): Boolean {
-        val result = SpeedMath.computeResult(
+        val verdict = SpeedMath.computeResultDetailed(
             samples = track,
             distanceMeters = distanceMetersProvider(),
             fovRadians = fovRadiansProvider(),
             trackAxisFraction = trackAxisFraction
-        ) ?: return false // not a ball flight - drop that track, leave the others running
+        )
+        diagnostics?.finalized(nowNs, verdict)
+        // not a ball flight - drop that track, leave the others running
+        val result = verdict.result ?: return false
         tracks.clear()
         prevMovingMask = null // mask will be stale after the cooldown; start fresh
         cooldownUntilNs = nowNs + cooldownNs

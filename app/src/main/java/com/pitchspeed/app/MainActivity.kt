@@ -18,6 +18,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.pitchspeed.app.ui.AppViewModel
+import com.pitchspeed.app.ui.components.shareDiagnosticsText
 import com.pitchspeed.app.ui.components.shareSessionCard
 import com.pitchspeed.app.ui.nav.Routes
 import com.pitchspeed.app.ui.screens.CaptureScreen
@@ -71,7 +72,10 @@ private fun PitchSpeedRoot() {
                     navController.navigate(Routes.Capture)
                 },
                 onHistory = { navController.navigate(Routes.History) },
-                onSettings = { navController.navigate(Routes.Settings) }
+                onSettings = { navController.navigate(Routes.Settings) },
+                onExportLastDiagnostics = viewModel.diagnosticsWithoutSummary?.let { text ->
+                    { shareDiagnosticsText(context, text) }
+                }
             )
         }
 
@@ -102,12 +106,16 @@ private fun PitchSpeedRoot() {
                     navController.navigate(Routes.Home) { popUpTo(Routes.Home) { inclusive = true } }
                 }
             } else {
+                val diagnostics = viewModel.diagnosticsFor(id)
                 SessionSummaryScreen(
                     session = session,
                     unit = viewModel.settings.unit,
                     onShare = { shareSessionCard(context, session, viewModel.settings.unit) },
                     onDone = {
                         navController.navigate(Routes.Home) { popUpTo(Routes.Home) { inclusive = true } }
+                    },
+                    onExportDiagnostics = diagnostics?.let { text ->
+                        { shareDiagnosticsText(context, text) }
                     }
                 )
             }
@@ -131,12 +139,16 @@ private fun PitchSpeedRoot() {
             if (session == null) {
                 LaunchedEffect(Unit) { navController.popBackStack() }
             } else {
+                val diagnostics = viewModel.diagnosticsFor(id)
                 SessionSummaryScreen(
                     session = session,
                     unit = viewModel.settings.unit,
                     onShare = { shareSessionCard(context, session, viewModel.settings.unit) },
                     onDone = { navController.popBackStack() },
-                    doneLabel = "Back"
+                    doneLabel = "Back",
+                    onExportDiagnostics = diagnostics?.let { text ->
+                        { shareDiagnosticsText(context, text) }
+                    }
                 )
             }
         }
