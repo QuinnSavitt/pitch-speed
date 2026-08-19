@@ -33,6 +33,10 @@ object FrameScanner {
     fun maskSize(w: Int, h: Int): Int = ((w + BLOCK - 1) / BLOCK) * ((h + BLOCK - 1) / BLOCK)
 
     /**
+     * @param curU/prevU/curV/prevV optional chroma planes sampled on the same grid as the luma
+     *        arrays. Color change counts toward the motion score, so a white ball crossing an
+     *        equally-bright blue sky — invisible to a luma diff — is still detected, because the
+     *        sky is strongly blue where the ball is neutral.
      * @param suppressMask blocks (see [maskSize]) that contained motion in the PREVIOUS frame
      *        pair. Motion recurring in the same block is stationary flicker — a person shifting
      *        their weight, swaying leaves, a flapping edge — never a ball, which lands somewhere
@@ -48,13 +52,34 @@ object FrameScanner {
         h: Int,
         t: ScanThresholds,
         suppressMask: ByteArray? = null,
-        outMovingMask: ByteArray? = null
+        outMovingMask: ByteArray? = null,
+        curU: ByteArray? = null,
+        prevU: ByteArray? = null,
+        curV: ByteArray? = null,
+        prevV: ByteArray? = null
     ): BlobCandidate? {
         if (cur.size < w * h || prev.size < w * h) return null
         val bw = (w + BLOCK - 1) / BLOCK
         val nBlocks = maskSize(w, h)
         val suppress = suppressMask?.takeIf { it.size == nBlocks }
         val outMask = outMovingMask?.takeIf { it.size == nBlocks }
+        val useChroma = curU != null && prevU != null && curV != null && prevV != null &&
+            curU.size >= w * h && prevU.size >= w * h && curV.size >= w * h && prevV.size >= w * h
+
+        // Auto-exposure swings (a cloud crossing the sun, AE hunting on a bright day) shift the
+        // WHOLE frame's luma between frames and would read as wall-to-wall motion, blinding the
+        // detector. Estimate the global shift from a sparse sample and subtract it, so only
+        // motion relative to the scene counts.
+        var shiftSum = 0.0
+        var shiftN = 0
+        var si = 0
+        while (si < w * h) {
+            val d = (cur[si].toInt() and 0xFF) - (prev[si].toInt() and 0xFF)
+            shiftSum += d.coerceIn(-40, 40)
+            shiftN++
+            si += 251 // prime stride: samples spread over the whole frame
+        }
+        val globalShift = if (shiftN > 0) (shiftSum / shiftN).toInt() else 0
         val cellW = (w + CELLS_X - 1) / CELLS_X
         val cellH = (h + CELLS_Y - 1) / CELLS_Y
         val nCells = CELLS_X * CELLS_Y
@@ -70,7 +95,13 @@ object FrameScanner {
                 val i = row + x
                 val luma = cur[i].toInt() and 0xFF
                 if (luma < t.brightMin) continue
-                val diff = abs(luma - (prev[i].toInt() and 0xFF))
+                var diff = abs(luma - (prev[i].toInt() and 0xFF) - globalShift)
+                if (useChroma) {
+                    // Chroma changes are subtler in magnitude but far more specific to a real
+                    // object passing, so they count double.
+                    diff += 2 * (abs((curU!![i].toInt() and 0xFF) - (prevU!![i].toInt() and 0xFF)) +
+                        abs((curV!![i].toInt() and 0xFF) - (prevV!![i].toInt() and 0xFF)))
+                }
                 if (diff < t.diffMin) continue
                 val b = (y / BLOCK) * bw + x / BLOCK
                 outMask?.set(b, 1)

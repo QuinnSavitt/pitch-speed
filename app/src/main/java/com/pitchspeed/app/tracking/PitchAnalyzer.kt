@@ -8,8 +8,8 @@ import com.pitchspeed.app.data.Sensitivity
 
 private fun thresholdsFor(sensitivity: Sensitivity): ScanThresholds = when (sensitivity) {
     Sensitivity.LOW -> ScanThresholds(brightMin = 180, diffMin = 40, minPixels = 6, maxPixels = 350)
-    Sensitivity.MEDIUM -> ScanThresholds(brightMin = 110, diffMin = 24, minPixels = 3, maxPixels = 600)
-    Sensitivity.HIGH -> ScanThresholds(brightMin = 50, diffMin = 12, minPixels = 2, maxPixels = 800)
+    Sensitivity.MEDIUM -> ScanThresholds(brightMin = 90, diffMin = 24, minPixels = 3, maxPixels = 600)
+    Sensitivity.HIGH -> ScanThresholds(brightMin = 50, diffMin = 12, minPixels = 1, maxPixels = 800)
 }
 
 /**
@@ -42,6 +42,8 @@ class PitchAnalyzer(
 
     private val step = 2 // scan every 2nd pixel in both axes: dense enough for a distant ball
     private var prevLuma: ByteArray? = null
+    private var prevChromaU: ByteArray? = null
+    private var prevChromaV: ByteArray? = null
     private var prevW = 0
     private var prevH = 0
     private val samples = mutableListOf<TrackSample>()
@@ -78,6 +80,32 @@ class PitchAnalyzer(
                 }
             }
 
+            var curU: ByteArray? = null
+            var curV: ByteArray? = null
+            if (image.planes.size >= 3) {
+                val planeU = image.planes[1]
+                val planeV = image.planes[2]
+                val bufU = planeU.buffer
+                val bufV = planeV.buffer
+                val capU = bufU.capacity()
+                val capV = bufV.capacity()
+                val cu = ByteArray(sw * sh)
+                val cv = ByteArray(sw * sh)
+                for (sy in 0 until sh) {
+                    val rowU = sy * planeU.rowStride
+                    val rowV = sy * planeV.rowStride
+                    val outRow = sy * sw
+                    for (sx in 0 until sw) {
+                        val iu = rowU + sx * planeU.pixelStride
+                        val iv = rowV + sx * planeV.pixelStride
+                        cu[outRow + sx] = if (iu < capU) bufU.get(iu) else 0
+                        cv[outRow + sx] = if (iv < capV) bufV.get(iv) else 0
+                    }
+                }
+                curU = cu
+                curV = cv
+            }
+
             val prev = prevLuma
             val inCooldown = tNs < cooldownUntilNs
 
@@ -85,7 +113,8 @@ class PitchAnalyzer(
                 val curMask = ByteArray(FrameScanner.maskSize(sw, sh))
                 val candidate = FrameScanner.findCandidate(
                     cur, prev, sw, sh, thresholdsFor(sensitivityProvider()),
-                    suppressMask = prevMovingMask, outMovingMask = curMask
+                    suppressMask = prevMovingMask, outMovingMask = curMask,
+                    curU = curU, prevU = prevChromaU, curV = curV, prevV = prevChromaV
                 )
                 prevMovingMask = curMask
 
@@ -107,6 +136,8 @@ class PitchAnalyzer(
             }
 
             prevLuma = cur
+            prevChromaU = curU
+            prevChromaV = curV
             prevW = sw
             prevH = sh
         } finally {
